@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import unicodedata
 import re
 from collections import defaultdict
+import numpy as np
 
 # Configuración inicial de la página
 st.set_page_config(
@@ -267,7 +268,7 @@ if "df_lecturas" not in st.session_state:
     st.session_state.df_lecturas = pd.DataFrame()
 
 if btn_buscar:
-    with st.spinner("Conectando a la API y procesando más de 160k registros..."):
+    with st.spinner("Conectando a la API y procesando registros..."):
         raw_data = obtener_lecturas_completas(fecha_inicio.strftime("%Y-%m-%d"), fecha_fin.strftime("%Y-%m-%d"))
         
         if not raw_data:
@@ -353,13 +354,19 @@ if not st.session_state.df_lecturas.empty:
     c2.metric("Consumo Total (m³)", f"{df_view['Consumo_diario'].sum():,.2f}")
     c3.metric("Promedio (m³)", f"{df_view['Consumo_diario'].mean():,.2f}")
 
-    # Botón para guardar en HES directamente desde Streamlit
     if st.button("💾 Guardar registros en HES"):
         with st.spinner("Guardando en la base de datos HES..."):
             resultado = insertar_en_HES(df_view)
             st.info(resultado)
 
-    tab1, tab2, tab3 = st.tabs(["📋 Tabla de Registros", "📊 Gráficas de Consumo", "🏆 Top 10 Medidores"])
+    # Pestañas con todas las herramientas solicitadas
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📋 Tabla de Registros", 
+        "📈 Consumos Diarios (Individual)", 
+        "📦 Cajas de Consumos (Tarifas)", 
+        "🚨 Medidores con Problemas", 
+        "🏆 Top 10 Medidores"
+    ])
 
     with tab1:
         st.dataframe(df_view, use_container_width=True, height=500)
@@ -367,11 +374,71 @@ if not st.session_state.df_lecturas.empty:
         st.download_button("📥 Descargar CSV", data=csv, file_name="lecturas_miaa.csv", mime="text/csv")
 
     with tab2:
-        df_group = df_view.groupby(df_view["Fecha"].dt.date)["Consumo_diario"].sum().reset_index()
-        fig_line = px.line(df_group, x="Fecha", y="Consumo_diario", title="Consumo Diario Total (m³)", markers=True)
-        st.plotly_chart(fig_line, use_container_width=True)
+        st.subheader("Gráfica de Consumo Diario y Acumulado por Medidor")
+        medidores_unicos = df_view["Medidor"].unique()
+        med_elegido = st.selectbox("Selecciona o escribe el número de medidor:", options=medidores_unicos)
+        
+        if med_elegido:
+            df_med = df_view[df_view["Medidor"] == med_elegido].sort_values("Fecha")
+            if not df_med.empty:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=df_med["Fecha"], y=df_med["Consumo_diario"], name="Consumo Diario (m³)", mode="lines+markers", marker=dict(color="blue")))
+                fig.add_trace(go.Scatter(x=df_med["Fecha"], y=df_med["Lectura"], name="Lectura Acumulada (m³)", mode="lines+markers", marker=dict(color="red"), yaxis="y2"))
+                
+                fig.update_layout(
+                    title=f"Medidor: {med_elegido}",
+                    xaxis=dict(title="Fecha"),
+                    yaxis=dict(title="Consumo Diario (m³)", titlefont=dict(color="blue"), tickfont=dict(color="blue")),
+                    yaxis2=dict(title="Lectura Acumulada (m³)", titlefont=dict(color="red"), tickfont=dict(color="red"), overlaying="y", side="right")
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
     with tab3:
+        st.subheader("Distribución del Consumo Acumulado por Tarifa (Box Plot)")
+        df_box = df_view[df_view["Consumo_diario"] > 0]
+        if not df_box.empty:
+            fig_box = px.box(df_box, x="Nivel", y="Consumo_diario", color="Nivel", points="outliers",
+                             title="Cajas de Consumo por Tarifa", labels={"Nivel": "Tarifa", "Consumo_diario": "Consumo (m³)"})
+            st.plotly_chart(fig_box, use_container_width=True)
+        else:
+            st.info("No hay suficientes datos de consumo positivo para generar el diagrama de cajas.")
+
+    with tab4:
+        st.subheader("Detección de Anomalías y Medidores con Problemas")
+        
+        # Análisis de problemas
+        meds_cero = []
+        meds_trabados = []
+        
+        for med, group in df_view.groupby("Medidor"):
+            g = group.sort_values("Fecha")
+            if len(g) >= 2:
+                consumos = g["Consumo_diario"].tolist()
+                lecturas = g["Lectura"].tolist()
+                
+                # Consumo siempre cero
+                if all(c == 0 for c in consumos):
+                    meds_cero.append({"Medidor": med, "Nombre": g.iloc[0]["Nombre"], "Colonia": g.iloc[0]["Colonia"], "Última Lectura": lecturas[-1]})
+                
+                # Lecturas trabadas (últimas lecturas idénticas)
+                ultimas = lecturas[-3:]
+                if len(ultimas) >= 3 and len(set(ultimas)) == 1:
+                    meds_trabados.append({"Medidor": med, "Nombre": g.iloc[0]["Nombre"], "Colonia": g.iloc[0]["Colonia"], "Lectura Constante": ultimas[0]})
+
+        st.markdown("### 🔵 Medidores con Consumo Siempre Cero")
+        if meds_cero:
+            st.dataframe(pd.DataFrame(meds_cero), use_container_width=True)
+        else:
+            st.success("No se encontraron medidores con consumo cero en este periodo.")
+
+        st.markdown("### 🟠 Medidores con Lecturas Trabadas")
+        if meds_trabados:
+            st.dataframe(pd.DataFrame(meds_trabados), use_container_width=True)
+        else:
+            st.success("No se encontraron medidores trabados en este periodo.")
+
+    with tab5:
+        st.subheader("Top 10 Medidores con Mayor Consumo")
         df_top10 = df_view.groupby(["Medidor", "Nombre", "Colonia"])["Consumo_diario"].sum().reset_index()
         df_top10 = df_top10.sort_values(by="Consumo_diario", ascending=False).head(10)
         fig_bar = px.bar(df_top10, x="Consumo_diario", y="Medidor", orientation="h", text="Consumo_diario", hover_data=["Nombre", "Colonia"], title="Top 10 Medidores")
