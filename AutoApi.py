@@ -388,8 +388,8 @@ if not st.session_state.df_lecturas.empty:
                 fig.update_layout(
                     title=f"Medidor: {med_elegido}",
                     xaxis=dict(title="Fecha"),
-                    yaxis=dict(title="Consumo Diario (m³)", titlefont=dict(color="blue"), tickfont=dict(color="blue")),
-                    yaxis2=dict(title="Lectura Acumulada (m³)", titlefont=dict(color="red"), tickfont=dict(color="red"), overlaying="y", side="right")
+                    yaxis=dict(title="Consumo Diario (m³)", title_font=dict(color="blue"), tickfont=dict(color="blue")),
+                    yaxis2=dict(title="Lectura Acumulada (m³)", title_font=dict(color="red"), tickfont=dict(color="red"), overlaying="y", side="right")
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
